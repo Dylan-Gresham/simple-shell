@@ -5,3 +5,5 @@ edition = "2021"
 author = "Dylan Gresham"
 
 [dependencies]
+libc = "0.2.169"
+termios = "0.3.3"
