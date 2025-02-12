@@ -1,7 +1,8 @@
 use libc::{chdir, geteuid, getpwnam, pid_t};
+use std::env;
 use std::ffi::{CStr, CString};
+use std::os::raw::c_char;
 use std::str::FromStr;
-use std::{env, mem};
 use termios::os::linux::termios;
 
 pub struct Shell {
@@ -34,11 +35,11 @@ impl Shell {
     /// ## Return(s)
     ///
     /// The prompt from the environment variable or the default prompt.
-    pub fn get_prompt(&mut self, env: String) {
+    pub fn get_prompt(env: String) -> String {
         match env::var(env) {
-            Ok(prompt) => self.prompt = prompt,
-            Err(_) => self.prompt = String::from("shell>"),
-        };
+            Ok(prompt) => prompt,
+            Err(_) => String::from("shell>"),
+        }
     }
 
     /// Changes the current working directory of the shell. Uses the Linux system call `chdir`.
@@ -48,50 +49,24 @@ impl Shell {
     ///
     /// - `Ok(())` if the directory was successfully changed.
     /// - `Err(isize)` if the directory failed to change.
-    pub fn change_dir(dir: CString) -> Result<(), isize> {
+    pub fn change_dir(dir: Vec<String>) -> Result<(), isize> {
         // If we weren' passsed a directory to go to, use libc to navigate to the
         // user's home directory
-        if dir.is_empty() {
-            // Get uid of the person who launched the process
-            let uid: u32 = unsafe { geteuid() };
-
-            // From the uid, get the username
-            let username = unsafe {
-                let mut result = std::ptr::null_mut();
-                let amt = match libc::sysconf(libc::_SC_GETPW_R_SIZE_MAX) {
-                    n if n < 0 => 512 as usize,
-                    n => n as usize,
-                };
-                let mut buf = Vec::with_capacity(amt);
-                let mut passwd: libc::passwd = mem::zeroed();
-
-                match libc::getpwuid_r(
-                    uid,
-                    &mut passwd,
-                    buf.as_mut_ptr(),
-                    buf.capacity() as libc::size_t,
-                    &mut result,
-                ) {
-                    0 if !result.is_null() => {
-                        let ptr = passwd.pw_name as *const _;
-                        let username: &CStr = CStr::from_ptr(ptr);
-                        CString::from(username)
-                    }
-                    _ => CString::from_str("root").unwrap(),
-                }
-            };
-
-            // Using the username, get the home directory
-            let passwd_struct: *mut libc::passwd =
-                unsafe { getpwnam(username.as_ptr() as *const i8) };
-            let home_dir = unsafe { (*passwd_struct).pw_dir };
-            return match unsafe { chdir(home_dir) } {
+        if dir.len() <= 1 {
+            let home_dir: CString = CString::from_str(&env::var("HOME").unwrap()).unwrap();
+            return match unsafe { chdir(home_dir.as_ptr() as *const i8) } {
                 0 => Ok(()),
                 other => Err(other.try_into().unwrap()),
             };
         }
 
-        match unsafe { chdir(dir.as_ptr() as *const i8) } {
+        match unsafe {
+            chdir(
+                CString::from_str(dir.get(1).unwrap().as_str())
+                    .unwrap()
+                    .as_ptr() as *const i8,
+            )
+        } {
             0 => Ok(()),
             other => Err(other.try_into().unwrap()),
         }
@@ -108,9 +83,20 @@ impl Shell {
     ///
     /// - `Ok(String)` if the line was parsed without issue.
     /// - `Err(String)` if there was an issue parsing the line.
-    pub fn cmd_parse(line: String) -> Result<String, String> {
+    pub fn cmd_parse(line: String) -> Result<Vec<String>, String> {
         let _trimmed = line.trim().to_string();
         todo!()
+    }
+
+    /// Trim the whitespace from the start and end of a string. For example "   ls -a   " becomes
+    /// "ls -a". This function modifies the argument `line` so that all printable chars are moved
+    /// to the front of the string.
+    ///
+    /// ## Parameter(s)
+    ///
+    /// - `line: &mut String` A reference to the `String` to trim.
+    pub fn trim_white(line: String) -> String {
+        line.trim().to_string()
     }
 
     /// Takes an argument list and checks if the first argument is a built in command such as exit,
@@ -133,5 +119,131 @@ impl Shell {
     /// Parse command line args from the user when the shell was launched.
     pub fn parse_args() {
         todo!()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use libc::{getcwd, size_t};
+
+    use super::*;
+
+    #[test]
+    fn test_cmd_parse_two() {
+        // The string we want to parse from the user
+        // foo -v
+        let stng: String = String::from("foo -v");
+
+        let actual = Shell::cmd_parse(stng);
+
+        let expected: Result<Vec<String>, String> = Ok(vec!["foo".into(), "-v".into()]);
+
+        assert_eq!(expected, actual);
+    }
+
+    #[test]
+    fn test_cmd_parse() {
+        let rval = Shell::cmd_parse(String::from("ls -a -l")).unwrap();
+
+        assert_eq!(String::from("ls"), *(rval.get(0).unwrap()));
+        assert_eq!(String::from("-a"), *(rval.get(1).unwrap()));
+        assert_eq!(String::from("-l"), *(rval.get(2).unwrap()));
+    }
+
+    #[test]
+    fn test_trim_white_no_whitespace() {
+        let rval = Shell::trim_white(String::from("ls -a"));
+
+        assert_eq!("ls -a", rval);
+    }
+
+    #[test]
+    fn test_trim_white_start_whitespace() {
+        let rval = Shell::trim_white(String::from("  ls -a"));
+
+        assert_eq!("ls -a", rval);
+    }
+
+    #[test]
+    fn test_trim_white_end_whitespace() {
+        let rval = Shell::trim_white(String::from("ls -a  "));
+
+        assert_eq!("ls -a", rval);
+    }
+
+    #[test]
+    fn test_trim_white_both_whitespace() {
+        let rval = Shell::trim_white(String::from(" ls -a "));
+
+        assert_eq!("ls -a", rval);
+    }
+
+    #[test]
+    fn test_trim_white_all_whitespace() {
+        let rval = Shell::trim_white(String::from(" "));
+
+        assert_eq!("", rval);
+    }
+
+    #[test]
+    fn test_get_prompt_default() {
+        if env::var("MY_PROMPT").is_ok() {
+            env::remove_var("MY_PROMPT");
+        }
+
+        let prompt = Shell::get_prompt(String::from("MY_PROMPT"));
+
+        assert_eq!("shell>", prompt);
+    }
+
+    #[test]
+    fn test_get_prompt_custom() {
+        env::set_var("MY_PROMPT", "foo>");
+
+        let prompt = Shell::get_prompt(String::from("MY_PROMPT"));
+
+        assert_eq!("foo>", prompt);
+    }
+
+    #[test]
+    fn test_ch_dir_home() {
+        let cmd = Shell::cmd_parse(String::from("cd")).unwrap();
+        let expected = env::var("HOME").unwrap();
+        let _ = Shell::change_dir(cmd).unwrap();
+
+        let size: size_t = env::var("PATH_MAX").unwrap().parse::<size_t>().unwrap();
+        let buffer = String::with_capacity(size);
+        let actual = unsafe { getcwd(buffer.as_ptr() as *mut i8, size) };
+
+        unsafe {
+            let c_str = CStr::from_ptr(actual as *const c_char);
+            let rust_string = c_str.to_string_lossy().into_owned();
+
+            assert_eq!(expected, rust_string);
+
+            // Reclaim ownership so it gets dropped after
+            let _ = CString::from_raw(actual as *mut c_char);
+        }
+    }
+
+    #[test]
+    fn test_ch_dir_root() {
+        let cmd = Shell::cmd_parse(String::from("cd /")).unwrap();
+        let expected = String::from("/");
+        let _ = Shell::change_dir(cmd).unwrap();
+
+        let size: size_t = env::var("PATH_MAX").unwrap().parse::<size_t>().unwrap();
+        let buffer = String::with_capacity(size);
+        let actual = unsafe { getcwd(buffer.as_ptr() as *mut i8, size) };
+
+        unsafe {
+            let c_str = CStr::from_ptr(actual as *const c_char);
+            let rust_string = c_str.to_string_lossy().into_owned();
+
+            assert_eq!(expected, rust_string);
+
+            // Reclaim ownership so it gets dropped after
+            let _ = CString::from_raw(actual as *mut c_char);
+        }
     }
 }
