@@ -6,4 +6,5 @@ author = "Dylan Gresham"
 
 [dependencies]
 libc = "0.2.169"
+rustyline = { version = "15.0.0", features = ["with-file-history"] }
 termios = "0.3.3"

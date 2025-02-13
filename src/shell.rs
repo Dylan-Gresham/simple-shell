@@ -1,13 +1,13 @@
-use libc::{c_char, chdir, execvp, pid_t};
+use libc::{c_char, chdir, execvp, getpwuid, getuid, pid_t};
 use std::env;
 use std::ffi::CString;
 use std::process::exit;
-use termios::os::linux::termios;
+use termios::Termios;
 
 pub struct Shell {
     pub shell_is_interactive: bool,
     pub shell_pgid: pid_t,
-    pub shell_tmodes: termios,
+    pub shell_tmodes: Termios,
     pub shell_terminal: isize,
     pub prompt: String,
 }
@@ -20,7 +20,13 @@ impl Shell {
     /// debugger will always cause this function to fail because the debugger maintains control of
     /// he subprocess it is debugging.
     pub fn init() -> Self {
-        todo!()
+        Self {
+            shell_is_interactive: true,
+            shell_pgid: pid_t::default(),
+            shell_tmodes: Termios::from_fd(libc::STDIN_FILENO).unwrap(),
+            shell_terminal: 0,
+            prompt: Shell::get_prompt(String::from("MY_PROMPT")),
+        }
     }
 
     /// Set the shell prompt. This function will attempt to load a prompt from the requested
@@ -52,11 +58,26 @@ impl Shell {
         // If we weren' passsed a directory to go to, use libc to navigate to the
         // user's home directory
         if dir.len() <= 1 {
-            let home_dir: CString = CString::new(env::var("HOME").unwrap()).unwrap();
-            return match unsafe { chdir(home_dir.as_ptr() as *const c_char) } {
-                0 => Ok(()),
-                other => Err(other.try_into().unwrap()),
-            };
+            match env::var("HOME") {
+                // If the HOME environment variable is set, use it
+                Ok(home_dir) => {
+                    let cstring = CString::new(home_dir).unwrap();
+                    return match unsafe { chdir(cstring.as_ptr() as *const c_char) } {
+                        0 => Ok(()),
+                        other => Err(other.try_into().unwrap()),
+                    };
+                }
+                // If it's not set, get it from the UID
+                Err(_) => unsafe {
+                    let uid = getuid();
+                    let passwd = getpwuid(uid);
+
+                    return match chdir((*passwd).pw_dir as *const c_char) {
+                        0 => Ok(()),
+                        other => Err(other.try_into().unwrap()),
+                    };
+                },
+            }
         }
 
         match unsafe { chdir(dir.get(1).unwrap().as_ptr() as *const c_char) } {
@@ -109,21 +130,42 @@ impl Shell {
     /// ## Returns
     ///
     /// - `Ok(())` if this function handled the command as a built in.
-    /// - `Err(())` if the command wasn't a built in and was *NOT* handled.
-    pub fn do_builtin(&self, argv: Vec<CString>) -> Result<(), ()> {
+    /// - `Err(isize)` if the command wasn't a built in and was *NOT* handled or the command failed
+    /// to execute and returned a non-zero status code..
+    pub fn do_builtin(&self, argv: Vec<CString>) -> Result<(), isize> {
         if argv.len() < 1 {
-            Err(())
+            Err(0)
         } else {
-            let c = argv.get(0).unwrap().as_ptr() as *const c_char;
+            let c_cstr = argv.get(0).unwrap();
+            if c_cstr.to_str().unwrap() == "exit" {
+                if argv.len() > 1 {
+                    exit(
+                        argv.get(1)
+                            .unwrap()
+                            .to_str()
+                            .unwrap()
+                            .parse::<i32>()
+                            .unwrap(),
+                    );
+                }
+                exit(0);
+            }
+
+            let c = c_cstr.as_ptr() as *const c_char;
             let mut ptrs: Vec<*const c_char> = argv.iter().map(|s| s.as_ptr()).collect();
             ptrs.push(std::ptr::null());
 
             let argv: *const *const c_char = ptrs.as_ptr();
             unsafe {
-                execvp(c, argv);
-            }
+                let code = execvp(c, argv);
 
-            Ok(())
+                if code == 0 {
+                    Ok(())
+                } else {
+                    println!("Error code: {code}");
+                    Err(code.try_into().unwrap())
+                }
+            }
         }
     }
 
