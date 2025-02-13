@@ -1,6 +1,7 @@
 use libc::{c_char, chdir, execvp, pid_t};
 use std::env;
 use std::ffi::CString;
+use std::process::exit;
 use termios::os::linux::termios;
 
 pub struct Shell {
@@ -128,7 +129,25 @@ impl Shell {
 
     /// Parse command line args from the user when the shell was launched.
     pub fn parse_args() {
-        todo!()
+        let mut args = std::env::args();
+        if args.len() > 1 {
+            let arg = args.nth(1).unwrap();
+            if arg == "-v" {
+                println!(
+                    "Simple Shell v{}.{} written by Dylan Gresham",
+                    env!("CARGO_PKG_VERSION_MAJOR"),
+                    env!("CARGO_PKG_VERSION_MINOR")
+                );
+
+                exit(0);
+            } else if arg == "-h" {
+                println!("Usage: simple-shell [-v | -h]\n");
+                println!("\t-v\t\tPrints the major and minor version of this program.");
+                println!("\t-h\t\tPrints this usage message.");
+
+                exit(0);
+            }
+        }
     }
 }
 
