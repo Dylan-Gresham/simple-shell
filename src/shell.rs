@@ -47,18 +47,18 @@ impl Shell {
     ///
     /// - `Ok(())` if the directory was successfully changed.
     /// - `Err(isize)` if the directory failed to change.
-    pub fn change_dir(dir: Vec<*mut c_char>) -> Result<(), isize> {
+    pub fn change_dir(dir: Vec<CString>) -> Result<(), isize> {
         // If we weren' passsed a directory to go to, use libc to navigate to the
         // user's home directory
         if dir.len() <= 1 {
             let home_dir: CString = CString::new(env::var("HOME").unwrap()).unwrap();
-            return match unsafe { chdir(home_dir.as_ptr() as *const i8) } {
+            return match unsafe { chdir(home_dir.as_ptr() as *const c_char) } {
                 0 => Ok(()),
                 other => Err(other.try_into().unwrap()),
             };
         }
 
-        match unsafe { chdir(*dir.get(1).unwrap()) } {
+        match unsafe { chdir(dir.get(1).unwrap().as_ptr() as *const c_char) } {
             0 => Ok(()),
             other => Err(other.try_into().unwrap()),
         }
@@ -75,24 +75,14 @@ impl Shell {
     ///
     /// - `Ok(Vec<*mut c_char>)` if the line was parsed without issue.
     /// - `Err(String)` if there was an issue parsing the line.
-    pub fn cmd_parse(line: String) -> Result<Vec<*mut c_char>, String> {
+    pub fn cmd_parse(line: String) -> Result<Vec<CString>, String> {
         // Parse the line into a vector of CStrings
-        let argv: Vec<CString> = line
+        Ok(line
             .trim()
             .to_string()
             .split(" ")
             .map(|s| CString::new(s).unwrap())
-            .collect();
-
-        // Convert from CStrings to a vector of c_char to be compatible with execvp.
-        // Can't do this all in one operation since the CString's would be deallocated after the
-        // closure and invalidate the borrow as a ptr and cast.
-        let mut argv: Vec<*mut c_char> = argv.iter().map(|s| s.as_ptr() as *mut c_char).collect();
-
-        // Null terminate the vector
-        argv.push(std::ptr::null_mut());
-
-        Ok(argv)
+            .collect())
     }
 
     /// Trim the whitespace from the start and end of a string. For example "   ls -a   " becomes
@@ -144,10 +134,6 @@ impl Shell {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::CStr;
-
-    use libc::{c_char, getcwd, size_t};
-
     use super::*;
 
     #[test]
@@ -156,21 +142,25 @@ mod tests {
         // foo -v
         let stng: String = String::from("foo -v");
 
-        let actual = Shell::cmd_parse(stng);
+        let actual = Shell::cmd_parse(stng).unwrap();
 
-        let expected: Result<Vec<*mut i8>, String> =
-            Ok(vec!["foo".as_ptr() as *mut i8, "-v".as_ptr() as *mut i8]);
+        let expected: Vec<CString> =
+            vec![CString::new("foo").unwrap(), CString::new("-v").unwrap()];
 
         assert_eq!(expected, actual);
     }
 
     #[test]
     fn test_cmd_parse() {
-        let rval = Shell::cmd_parse(String::from("ls -a -l")).unwrap();
+        let rval: Vec<CString> = Shell::cmd_parse(String::from("ls -a -l")).unwrap();
 
-        assert_eq!("ls".as_ptr() as *mut i8, *(rval.get(0).unwrap()));
-        assert_eq!("-a".as_ptr() as *mut i8, *(rval.get(1).unwrap()));
-        assert_eq!("-l".as_ptr() as *mut i8, *(rval.get(2).unwrap()));
+        let expected: Vec<CString> = vec![
+            CString::new("ls").unwrap(),
+            CString::new("-a").unwrap(),
+            CString::new("-l").unwrap(),
+        ];
+
+        assert_eq!(expected, rval);
     }
 
     #[test]
@@ -234,19 +224,9 @@ mod tests {
         let expected = env::var("HOME").unwrap();
         let _ = Shell::change_dir(cmd).unwrap();
 
-        let size: size_t = env::var("PATH_MAX").unwrap().parse::<size_t>().unwrap();
-        let buffer = String::with_capacity(size);
-        let actual = unsafe { getcwd(buffer.as_ptr() as *mut i8, size) };
+        let actual = env::current_dir().unwrap().to_str().unwrap().to_string();
 
-        unsafe {
-            let c_str = CStr::from_ptr(actual as *const c_char);
-            let rust_string = c_str.to_string_lossy().into_owned();
-
-            assert_eq!(expected, rust_string);
-
-            // Reclaim ownership so it gets dropped after
-            let _ = CString::from_raw(actual as *mut c_char);
-        }
+        assert_eq!(expected, actual);
     }
 
     #[test]
@@ -255,18 +235,8 @@ mod tests {
         let expected = String::from("/");
         let _ = Shell::change_dir(cmd).unwrap();
 
-        let size: size_t = env::var("PATH_MAX").unwrap().parse::<size_t>().unwrap();
-        let buffer = String::with_capacity(size);
-        let actual = unsafe { getcwd(buffer.as_ptr() as *mut i8, size) };
+        let actual = env::current_dir().unwrap().to_str().unwrap().to_string();
 
-        unsafe {
-            let c_str = CStr::from_ptr(actual as *const c_char);
-            let rust_string = c_str.to_string_lossy().into_owned();
-
-            assert_eq!(expected, rust_string);
-
-            // Reclaim ownership so it gets dropped after
-            let _ = CString::from_raw(actual as *mut c_char);
-        }
+        assert_eq!(expected, actual);
     }
 }
