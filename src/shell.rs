@@ -1,14 +1,17 @@
-use libc::{c_char, chdir, execvp, getpwuid, getuid, pid_t};
+use libc::{
+    c_char, chdir, getpgrp, getpid, getpwuid, getuid, isatty, kill, pid_t, setpgid, tcgetattr,
+    tcgetpgrp, tcsetpgrp, termios, SIGTTIN, STDIN_FILENO,
+};
 use std::env;
 use std::ffi::CString;
+use std::io::Error;
 use std::process::exit;
-use termios::Termios;
 
 pub struct Shell {
     pub shell_is_interactive: bool,
     pub shell_pgid: pid_t,
-    pub shell_tmodes: Termios,
-    pub shell_terminal: isize,
+    pub shell_tmodes: termios,
+    pub shell_terminal: i32,
     pub prompt: String,
 }
 
@@ -20,12 +23,40 @@ impl Shell {
     /// debugger will always cause this function to fail because the debugger maintains control of
     /// he subprocess it is debugging.
     pub fn init() -> Self {
+        let shell_terminal = STDIN_FILENO;
+        let shell_is_interactive = unsafe { isatty(shell_terminal) } == 1;
+        let mut shell_pgid: pid_t = 0;
+        let mut shell_tmodes: termios = unsafe { std::mem::zeroed() };
+        let prompt = Shell::get_prompt(String::from("MY_PROMPT"));
+
+        if shell_is_interactive {
+            unsafe {
+                while tcgetpgrp(shell_terminal) != getpid() {
+                    kill(-getpid(), SIGTTIN);
+                }
+
+                shell_pgid = getpid();
+                if getpgrp() != shell_pgid {
+                    setpgid(shell_pgid, shell_pgid);
+                }
+
+                tcsetpgrp(shell_terminal, shell_pgid);
+
+                if tcgetattr(shell_terminal, &mut shell_tmodes) != 0 {
+                    panic!(
+                        "Failed to get terminal attributes: {}",
+                        Error::last_os_error()
+                    );
+                }
+            }
+        }
+
         Self {
-            shell_is_interactive: true,
-            shell_pgid: pid_t::default(),
-            shell_tmodes: Termios::from_fd(libc::STDIN_FILENO).unwrap(),
-            shell_terminal: 0,
-            prompt: Shell::get_prompt(String::from("MY_PROMPT")),
+            shell_is_interactive,
+            shell_pgid,
+            shell_tmodes,
+            shell_terminal,
+            prompt,
         }
     }
 
@@ -101,7 +132,6 @@ impl Shell {
         // Parse the line into a vector of CStrings
         Ok(line
             .trim()
-            .to_string()
             .split(" ")
             .map(|s| CString::new(s).unwrap())
             .collect())
@@ -131,12 +161,12 @@ impl Shell {
     ///
     /// - `Ok(())` if this function handled the command as a built in.
     /// - `Err(isize)` if the command wasn't a built in and was *NOT* handled or the command failed
-    /// to execute and returned a non-zero status code..
+    ///   to execute and returned a non-zero status code..
     pub fn do_builtin(&self, argv: Vec<CString>) -> Result<(), isize> {
-        if argv.len() < 1 {
+        if argv.is_empty() {
             Err(0)
         } else {
-            let c_cstr = argv.get(0).unwrap();
+            let c_cstr = argv.first().unwrap();
             let builtin_cmd = c_cstr.to_str().unwrap();
             if builtin_cmd == "exit" {
                 if argv.len() > 1 {
@@ -153,8 +183,16 @@ impl Shell {
             } else if builtin_cmd == "cd" {
                 Shell::change_dir(argv)
             } else if builtin_cmd == "history" {
-                let history_file_contents: String =
+                let mut history_file_contents: String =
                     std::fs::read_to_string("history.txt").unwrap_or_default();
+
+                // Remove the leading "#V2" from the history file if it's not the default
+                if !history_file_contents.is_empty() {
+                    history_file_contents = history_file_contents
+                        [history_file_contents.char_indices().nth(4).unwrap().0..]
+                        .to_string();
+                }
+
                 println!("{}", history_file_contents);
                 Ok(())
             } else {
