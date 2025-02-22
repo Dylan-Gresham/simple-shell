@@ -137,7 +137,8 @@ impl Shell {
             Err(0)
         } else {
             let c_cstr = argv.get(0).unwrap();
-            if c_cstr.to_str().unwrap() == "exit" {
+            let builtin_cmd = c_cstr.to_str().unwrap();
+            if builtin_cmd == "exit" {
                 if argv.len() > 1 {
                     exit(
                         argv.get(1)
@@ -149,22 +150,15 @@ impl Shell {
                     );
                 }
                 exit(0);
-            }
-
-            let c = c_cstr.as_ptr() as *const c_char;
-            let mut ptrs: Vec<*const c_char> = argv.iter().map(|s| s.as_ptr()).collect();
-            ptrs.push(std::ptr::null());
-
-            let argv: *const *const c_char = ptrs.as_ptr();
-            unsafe {
-                let code = execvp(c, argv);
-
-                if code == 0 {
-                    Ok(())
-                } else {
-                    println!("Error code: {code}");
-                    Err(code.try_into().unwrap())
-                }
+            } else if builtin_cmd == "cd" {
+                Shell::change_dir(argv)
+            } else if builtin_cmd == "history" {
+                let history_file_contents: String =
+                    std::fs::read_to_string("history.txt").unwrap_or_default();
+                println!("{}", history_file_contents);
+                Ok(())
+            } else {
+                Err(-1)
             }
         }
     }
