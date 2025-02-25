@@ -134,11 +134,8 @@ impl Shell {
     /// - `Err(String)` if there was an issue parsing the line.
     pub fn cmd_parse(line: String) -> Result<Vec<CString>, String> {
         // Parse the line into a vector of CStrings
-        Ok(line
-            .trim()
-            .split(" ")
-            .map(|s| CString::new(s).unwrap())
-            .collect())
+        let line = Shell::trim_white(line);
+        Ok(line.split(" ").map(|s| CString::new(s).unwrap()).collect())
     }
 
     /// Trim the whitespace from the start and end of a string. For example "   ls -a   " becomes
@@ -149,7 +146,7 @@ impl Shell {
     ///
     /// - `line: &mut String` A reference to the `String` to trim.
     pub fn trim_white(line: String) -> String {
-        line.trim().to_string()
+        line.split_whitespace().collect::<Vec<&str>>().join(" ")
     }
 
     /// Takes an argument list and checks if the first argument is a built in command such as exit,
@@ -231,6 +228,8 @@ impl Shell {
 
 #[cfg(test)]
 mod tests {
+    use rustyline::{history::History, DefaultEditor};
+
     use super::*;
 
     #[test]
@@ -335,5 +334,44 @@ mod tests {
         let actual = env::current_dir().unwrap().to_str().unwrap().to_string();
 
         assert_eq!(expected, actual);
+    }
+
+    // My tests
+
+    #[test]
+    fn test_whitespace_between_params() {
+        let rval = Shell::trim_white(String::from("ls      -a     -l"));
+
+        assert_eq!("ls -a -l", rval);
+    }
+
+    #[test]
+    fn test_whitespace_between_params_two() {
+        let rval = Shell::trim_white(String::from("mkdir    -p    foo"));
+
+        assert_eq!("mkdir -p foo", rval);
+    }
+
+    #[test]
+    fn test_add_history() {
+        let mut rl = DefaultEditor::new().unwrap();
+        let _ = rl.load_history("history.txt");
+        match rl.add_history_entry("exit") {
+            Ok(_) => (),
+            Err(_) => panic!("Unable to add entry"),
+        };
+    }
+
+    #[test]
+    fn test_get_history() {
+        let mut rl = DefaultEditor::new().unwrap();
+        let _ = rl.load_history("history.txt");
+        let _ = rl.clear_history();
+        let _ = rl.add_history_entry("exit");
+        let history = rl.history();
+        if history.len() == 1 {
+            let cmd = history.into_iter().next().unwrap().clone();
+            assert_eq!(String::from("exit"), cmd);
+        }
     }
 }
