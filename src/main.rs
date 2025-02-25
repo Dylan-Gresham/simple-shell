@@ -1,12 +1,8 @@
-use std::ffi::CString;
 use std::process::exit;
 
 use libc::{
-    c_char, c_int, pid_t, posix_spawn_file_actions_init, posix_spawn_file_actions_t,
-    posix_spawnattr_init, posix_spawnattr_setflags, posix_spawnattr_setpgroup,
-    posix_spawnattr_setsigdefault, posix_spawnattr_t, posix_spawnp, setpgid, sigemptyset, signal,
-    sigset_t, tcsetpgrp, waitpid, POSIX_SPAWN_SETPGROUP, POSIX_SPAWN_SETSIGDEF, SIGINT, SIGQUIT,
-    SIGTSTP, SIGTTIN, SIGTTOU, SIG_IGN, WIFEXITED,
+    abort, c_char, c_int, execvp, fork, getpid, pid_t, setpgid, signal, tcsetpgrp, waitpid, SIGINT,
+    SIGQUIT, SIGTSTP, SIGTTIN, SIGTTOU, SIG_DFL,
 };
 use rustyline::error::ReadlineError;
 use rustyline::{DefaultEditor, Result};
@@ -23,14 +19,6 @@ fn main() -> Result<()> {
     }
 
     let shell: Shell = Shell::init();
-
-    unsafe {
-        let _ = signal(SIGINT, SIG_IGN);
-        let _ = signal(SIGQUIT, SIG_IGN);
-        let _ = signal(SIGTSTP, SIG_IGN);
-        let _ = signal(SIGTTIN, SIG_IGN);
-        let _ = signal(SIGTTOU, SIG_IGN);
-    }
 
     let builtin_cmds = ["cd", "exit", "history"];
 
@@ -55,61 +43,45 @@ fn main() -> Result<()> {
                             let _ = shell.do_builtin(cmd);
                         } else {
                             let c = c_cstr.as_ptr() as *const c_char;
-                            let mut ptrs: Vec<*mut c_char> =
-                                cmd.iter().map(|s| s.as_ptr().cast_mut()).collect();
-                            ptrs.push(std::ptr::null_mut());
+                            let mut ptrs: Vec<*const c_char> =
+                                cmd.iter().map(|s| s.as_ptr()).collect();
+                            ptrs.push(std::ptr::null());
 
-                            let argv: *const *mut c_char = ptrs.as_ptr();
+                            let argv: *const *const c_char = ptrs.as_ptr();
                             unsafe {
-                                let child_pid: pid_t = pid_t::default();
+                                let fork_pid: pid_t = fork();
 
-                                // Setup spawn attributes
-                                let mut attr: posix_spawnattr_t = std::mem::zeroed();
-                                let mut file_actions: posix_spawn_file_actions_t =
-                                    std::mem::zeroed();
+                                if fork_pid == 0 {
+                                    // Successfully spawned a new process, give control to child
+                                    let child_pid: pid_t = getpid();
+                                    setpgid(child_pid, child_pid);
+                                    tcsetpgrp(shell.shell_terminal, child_pid);
 
-                                posix_spawnattr_init(&mut attr);
-                                posix_spawnattr_setflags(
-                                    &mut attr,
-                                    (POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF)
-                                        .try_into()
-                                        .unwrap(),
-                                );
-                                posix_spawnattr_setpgroup(&mut attr, 0);
+                                    // Set signals
+                                    signal(SIGINT, SIG_DFL);
+                                    signal(SIGQUIT, SIG_DFL);
+                                    signal(SIGTSTP, SIG_DFL);
+                                    signal(SIGTTIN, SIG_DFL);
+                                    signal(SIGTTOU, SIG_DFL);
 
-                                let mut sig_default: sigset_t = std::mem::zeroed();
-                                sigemptyset(&mut sig_default);
-                                posix_spawnattr_setsigdefault(&mut attr, &sig_default);
-
-                                posix_spawn_file_actions_init(&mut file_actions);
-
-                                let envp: Vec<CString> = std::env::vars()
-                                    .map(|(key, value)| {
-                                        CString::new(format!("{}={}", key, value)).unwrap()
-                                    })
-                                    .collect();
-
-                                let mut env_ptrs: Vec<*mut c_char> = envp
-                                    .into_iter()
-                                    .map(|cstr| cstr.as_ptr() as *mut c_char)
-                                    .collect();
-                                env_ptrs.push(std::ptr::null_mut());
-
-                                if posix_spawnp(
-                                    child_pid as *mut pid_t,
-                                    c,
-                                    &file_actions,
-                                    &attr,
-                                    argv,
-                                    env_ptrs.as_ptr(),
-                                ) != 0
-                                {
-                                    eprintln!("`posix_spawn` failed");
+                                    // Tell it to execute the non-builtin command
+                                    execvp(c, argv);
                                     exit(1);
+                                } else if fork_pid < 0 {
+                                    eprintln!("Failed to fork a new process.");
+                                    abort();
                                 }
 
-                                let _ = setpgid(child_pid, child_pid);
-                                let _ = tcsetpgrp(shell.shell_terminal, child_pid);
+                                setpgid(fork_pid, fork_pid);
+                                tcsetpgrp(shell.shell_terminal, fork_pid);
+
+                                let status: c_int = c_int::default();
+                                let wait = waitpid(fork_pid, status as *mut c_int, 0);
+                                if wait == -1 {
+                                    eprintln!("waidpid failed with -1 code");
+                                }
+
+                                tcsetpgrp(shell.shell_terminal, shell.shell_pgid);
                             }
                         }
                     }
@@ -134,6 +106,7 @@ fn main() -> Result<()> {
     }
 
     let _ = rl.save_history("history.txt");
+    shell.destroy();
 
     Ok(())
 }

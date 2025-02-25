@@ -1,10 +1,10 @@
 use libc::{
-    c_char, chdir, getpgrp, getpid, getpwuid, getuid, isatty, kill, pid_t, setpgid, tcgetattr,
-    tcgetpgrp, tcsetpgrp, termios, SIGTTIN, STDIN_FILENO,
+    c_char, chdir, getpid, getpwuid, getuid, isatty, kill, pid_t, setpgid, signal, tcsetattr,
+    tcsetpgrp, termios, SIGINT, SIGQUIT, SIGTERM, SIGTSTP, SIGTTIN, SIGTTOU, SIG_DFL, SIG_IGN,
+    STDIN_FILENO, TCSADRAIN,
 };
 use std::env;
 use std::ffi::CString;
-use std::io::Error;
 use std::process::exit;
 
 pub struct Shell {
@@ -25,30 +25,19 @@ impl Shell {
     pub fn init() -> Self {
         let shell_terminal = STDIN_FILENO;
         let shell_is_interactive = unsafe { isatty(shell_terminal) } == 1;
-        let mut shell_pgid: pid_t = 0;
-        let mut shell_tmodes: termios = unsafe { std::mem::zeroed() };
+        let shell_pgid: pid_t = unsafe { getpid() };
+        let shell_tmodes: termios = unsafe { std::mem::zeroed() };
         let prompt = Shell::get_prompt(String::from("MY_PROMPT"));
 
-        if shell_is_interactive {
-            unsafe {
-                while tcgetpgrp(shell_terminal) != getpid() {
-                    kill(-getpid(), SIGTTIN);
-                }
+        unsafe {
+            setpgid(shell_pgid, shell_pgid);
+            tcsetpgrp(shell_terminal, shell_pgid);
 
-                shell_pgid = getpid();
-                if getpgrp() != shell_pgid {
-                    setpgid(shell_pgid, shell_pgid);
-                }
-
-                tcsetpgrp(shell_terminal, shell_pgid);
-
-                if tcgetattr(shell_terminal, &mut shell_tmodes) != 0 {
-                    panic!(
-                        "Failed to get terminal attributes: {}",
-                        Error::last_os_error()
-                    );
-                }
-            }
+            let _ = signal(SIGINT, SIG_IGN);
+            let _ = signal(SIGQUIT, SIG_IGN);
+            let _ = signal(SIGTSTP, SIG_IGN);
+            let _ = signal(SIGTTIN, SIG_IGN);
+            let _ = signal(SIGTTOU, SIG_IGN);
         }
 
         Self {
@@ -57,6 +46,21 @@ impl Shell {
             shell_tmodes,
             shell_terminal,
             prompt,
+        }
+    }
+
+    pub fn destroy(&self) {
+        unsafe {
+            tcsetpgrp(self.shell_terminal, self.shell_pgid);
+            tcsetattr(self.shell_terminal, TCSADRAIN, &self.shell_tmodes);
+
+            signal(SIGINT, SIG_DFL);
+            signal(SIGQUIT, SIG_DFL);
+            signal(SIGTSTP, SIG_DFL);
+            signal(SIGTTIN, SIG_DFL);
+            signal(SIGTTOU, SIG_DFL);
+
+            kill(getpid(), SIGTERM);
         }
     }
 
