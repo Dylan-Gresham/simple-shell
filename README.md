@@ -5,7 +5,15 @@ Steps to configure, build, run, and test the project.
 ## Building
 
 ```bash
-make
+make build
+```
+
+## Running
+
+For some reason, running the `make run` command will fail to start the program. Running it through Cargo or the binary itself is fine though.
+
+```bash
+cargo run --release
 ```
 
 ## Testing
